@@ -73,6 +73,7 @@ def policy_iteration(mdp:MDP, num_iter):
         
         # Policy Improvement
         Qpi = mdp.L[ntrm_sta,:] + mdp.gamma * np.sum(mdp.P[ntrm_sta,:,:] * Vpi[k,None,None,:], axis=2)
+        import pdb;pdb.set_trace()
         pi[k+1,ntrm_sta] = np.argmin(Qpi, axis=1) 
 
     
@@ -159,7 +160,7 @@ if __name__ == "__main__":
     print(env.observation_space.n, env.action_space.n)
     # Run Value Iteration
     V1, pi1 = value_iteration(mdp, 130)
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     displayValuesText(V1,pi1)
     displayValuesFig(V1)
     # displayActions(V1,pi1)

@@ -2,15 +2,6 @@ import numpy as np
 import utils
 from scipy.stats import multivariate_normal
 from tqdm import tqdm
-import ray
-x = np.linspace(-3, 3, 21)
-y = np.linspace(-3, 3, 21)
-theta = np.linspace(-np.pi, np.pi, 40, endpoint=False)
-t = np.linspace(0, 99, 100)
-# Create Contol Space
-v = np.linspace(0, 1, 6)
-w = np.linspace(-1, 1, 11)
-
 def wrap_angle(theta):
     """
     Wraps theta to the range [-pi, pi].
@@ -31,7 +22,7 @@ def get_resolution():
     return np.array([x_resolution, y_resolution, theta_resolution, t_resolution, v_resolution, w_resolution])
 
 
-def state_metric_to_index(metric_state: np.ndarray) -> tuple:
+def state_metric_to_index(metric_state: np.ndarray, mode="time") -> tuple:
     """
     Convert the metric state to grid indices according to your descretization design.
     Args:
@@ -39,23 +30,19 @@ def state_metric_to_index(metric_state: np.ndarray) -> tuple:
     Returns:
         tuple: grid indices
     """
-    m = np.array([-3, -3, -np.pi, 0])
     res = get_resolution()
-    r = res[:4]
-    return tuple(np.floor((metric_state-m)/r).astype(int))
-
-def state_index_to_metric(state_index: tuple) -> np.ndarray:
-    """
-    Convert the grid indices to metric state according to your descretization design.
-    Args:
-        state_index (tuple): grid indices (x, y, theta, t)
-    Returns:
-        np.ndarray: metric state
-    """
-    m = np.array([-3, -3, -np.pi, 0])
-    res = get_resolution()
-    r = res[:4]
-    return (state_index)*r+m
+    if mode == "time":
+        m = np.array([-3, -3, -np.pi, 0])
+        r = res[:4]
+    elif mode == "withou_time":
+        # This is mutidimensional version, input is |x| x 7 x 3 x |u| 
+        m = np.array([-3, -3, -np.pi])[np.newaxis, np.newaxis, :, np.newaxis]
+        r = res[:3][np.newaxis, np.newaxis, :, np.newaxis]
+    elif mode == "multi-dim_state":
+        # This is mutidimensional version, input is |x| x 4 x |u| 
+        m = np.array([-3, -3, -np.pi, 0])[np.newaxis, :, np.newaxis]
+        r = res[:4][np.newaxis, :, np.newaxis]
+    return np.floor((metric_state-m)/r).astype(int)
 
 def control_metric_to_index(control_metric: np.ndarray) -> tuple:
     """
@@ -67,39 +54,35 @@ def control_metric_to_index(control_metric: np.ndarray) -> tuple:
     m = np.array([0, -1])
     res = get_resolution()
     r = res[4:]
-    return tuple(np.floor((control_metric-m)/r).astype(int))
-
-def control_index_to_metric(control_index:tuple) -> tuple:
-    """
-    Args:
-        v: [N, ] array of indices in the v space
-        w: [N, ] array of indices in the w space
-    Returns:
-        [2, N] array of controls in metric space
-    """
-    m = np.array([0, -1])
-    res = get_resolution()
-    r = res[4:]
-    return (control_index)*r+m
+    return np.floor((control_metric-m)/r).astype(int)
 
 def get_neighbors(state: np.ndarray) -> tuple:
+    # state: (|x|,4,|u|)
     # Resolution of the grid
     res = get_resolution()
     r = res[:3]
-    x,y,theta,t = state
-    state = state[:3]
-    neighbors = [state, 
-                 state + np.array([r[0], 0, 0]),
-                 state + np.array([-r[0], 0, 0]),
-                 state + np.array([0, r[1], 0]),
-                 state + np.array([0, -r[1], 0]),
-                 state + np.array([0, 0, r[2]]),
-                 state + np.array([0, 0, -r[2]]),
-    ]
-    # neighbors index 
-    neighbors_index = []
-    for i in range(len(neighbors)):
-        neighbors_index.append(state_metric_to_index(np.append(neighbors[i],t)))
+    # x,y,theta,t = state
+    # state = state[:3]
+
+
+    # Split next_error into components
+    x, y, theta, t = state[:, 0, :], state[:, 1, :], state[:, 2, :], state[:, 3, :]
+    dim_states = x.shape[0]
+    dim_controls = x.shape[1]
+    # Initialize neighbors and neighbors_index arrays
+    neighbors = np.zeros((dim_states, 7, 3, dim_controls))
+    neighbors_index = np.zeros((dim_states, 7, 3, dim_controls), dtype=int)
+
+    # Calculate neighbors
+    neighbors[:, 0, :, :] = state[:, :3, :]  # state
+    neighbors[:, 1, :, :] = state[:, :3, :] + np.array([r[0], 0, 0])[:, np.newaxis]  # +x
+    neighbors[:, 2, :, :] = state[:, :3, :] + np.array([-r[0], 0, 0])[:, np.newaxis]  # -x
+    neighbors[:, 3, :, :] = state[:, :3, :] + np.array([0, r[1], 0])[:, np.newaxis]  # +y
+    neighbors[:, 4, :, :] = state[:, :3, :] + np.array([0, -r[1], 0])[:, np.newaxis]  # -y
+    neighbors[:, 5, :, :] = state[:, :3, :] + np.array([0, 0, r[2]])[:, np.newaxis]  # +theta
+    neighbors[:, 6, :, :] = state[:, :3, :] + np.array([0, 0, -r[2]])[:, np.newaxis]  # -theta
+
+    neighbors_index = state_metric_to_index(neighbors, mode="withou_time")
     return neighbors, neighbors_index
 
 def normalize_prob(probabilities: np.ndarray) -> np.ndarray:
@@ -112,21 +95,31 @@ def normalize_prob(probabilities: np.ndarray) -> np.ndarray:
     return probabilities/total_prob
 
 def add_noise(mean, samples):
-
-    sigma = np.array([[0.04, 0, 0],
-                      [0, 0.04, 0],
-                      [0, 0, 0.004]])
-    # sigma = np.square(sigma)
-
-    mean, t = mean[:3], mean[3]
-    samples = np.array(samples)
-    # Create a multivariate normal distribution 
-    rv = multivariate_normal(mean, sigma)
+    # mean: |x| x 4 x |u|
+    # samples: |x| x 7 x 3 x |u|
+    dim_states = mean.shape[0]
+    dim_controls = mean.shape[2]
+    res = get_resolution()
+    r = np.square(res[:3])
+    # rescaled sigma to grids unit
+    sigma = np.array([[0.04/r[0], 0, 0],
+                      [0, 0.04/r[1], 0],
+                      [0, 0, 0.004/r[2]]])
+    res = get_resolution()
+    r = res[:3]
     # import pdb; pdb.set_trace()
-    # Compute the probabilities for each state
-    probabilities = rv.pdf(samples[:, :3]) # slice samples 8x4 to 8x3
-    # Normalize the probabilities
-    return normalize_prob(probabilities) 
+    mean, t = mean[:,:3,:], mean[:,3,:]
+    samples = np.array(samples)
+    probabilities = np.zeros((dim_states, 7, 1, dim_controls), dtype=np.float16)
+    for i in range(dim_states):
+        for j in range(dim_controls):
+            rv = multivariate_normal(mean[i,:,j], sigma)
+            probabilities[i,:,:,j] = normalize_prob(rv.pdf(samples[i, :, :, j])).reshape(-1,1)
+    full_samples = np.concatenate((samples, probabilities), axis=2)
+    # TODO: test reshape
+    full_samples.transpose(0, 3, 1, 2)
+    # current shape: |x| x 7 x 4 x |u|
+    return full_samples.transpose(0, 3, 1, 2) #desired output: |x| x |u| x 7 x 4
 
 def error_function(t, curr_error, u_t, noise = True):
     '''
@@ -138,171 +131,78 @@ def error_function(t, curr_error, u_t, noise = True):
     u_t = [v, omega]
     w_t: noise (3x1)
     '''
+    assert noise==True, "have not implement the version of 0 noise"
     traj = utils.lissajous
-    curr_ref = traj(t)
-    next_ref = traj(t+1)
-
-    curr_ref = np.array(curr_ref)
-    next_ref = np.array(next_ref)
+    curr_ref = np.array(traj(t))
+    next_ref = np.array(traj(t+1))
     time_interval = utils.time_step
-    G_et = np.array([[time_interval * np.cos(curr_error[2]+curr_ref[2]), 0],
-                        [time_interval * np.sin(curr_error[2]), 0],
-                        [0, time_interval]])
+
+    G_et = np.stack([
+                    np.stack([time_interval * np.cos(curr_error[:, 2] + curr_ref[2]), np.zeros_like(curr_error[:, 2])], axis=-1),
+                    np.stack([time_interval * np.sin(curr_error[:, 2]), np.zeros_like(curr_error[:, 2])], axis=-1),
+                    np.stack([np.zeros_like(curr_error[:, 2]), time_interval * np.ones_like(curr_error[:, 2])], axis=-1)
+                    ], axis=1)
     # Compute the next error at time t+1
-    next_error = curr_error + G_et @ u_t + (curr_ref-next_ref)
+    ref_error = curr_ref - next_ref
+    next_error = curr_error[:, :, np.newaxis] + np.einsum('ijk,kl->ijl', G_et, u_t.T) + ref_error[np.newaxis, :, np.newaxis]
     # Wrap the angle
-    next_error[2] = wrap_angle(next_error[2])
-    next_error = np.append(next_error, t+1)
+    next_error[:,2,:] = wrap_angle(next_error[:,2,:])
+    new_time = np.full((next_error.shape[0], 1, next_error.shape[2]), t+1)
+    next_error = np.concatenate((next_error, new_time), axis=1) 
     # Get the 7 neighbors of the next error
     neighbors, neighbors_index = get_neighbors(next_error)
     # Consider the noise and get the probabilities of transitioning to each neighbor
-    next_error = state_metric_to_index(next_error)
-    probabilities = add_noise(next_error, neighbors_index)
-    if noise:
-        return neighbors, neighbors_index, probabilities 
-    else:
-        print("Should add noise or implement the noiseless version")
-        raise NotImplementedError
-
+    next_error = state_metric_to_index(next_error, mode="multi-dim_state")
+    probabilities_matrix = add_noise(next_error, neighbors_index)
+    return probabilities_matrix 
+    
+    
 def compute_transition_probability(control_space, state_space):
     # Initialize the transition probability matrix P (t, x, y, theta, v, w, 7, 4)
-    P = np.zeros((100, 21, 21, 40, 6, 11, 7, 4))
-    i = 0
-    for t in range(1):
-        for u in tqdm(control_space):
-            for e in tqdm(state_space):
-                neighbors, neighbors_index, probabilities = error_function(t, e[:3], u, noise=True)
-                # print("Neighbors", neighbors)
-                # print("Probabilities", probabilities)
-                e_x_idx, e_y_idx, e_theta_idx, e_t_idx = state_metric_to_index(e)
-                u_v_idx, u_w_idx = control_metric_to_index(u)
-                # Assign the probabilities to neighbors indices
-                for i in range(7):
-                    neighbors_state = neighbors[i]
-                    P[t, e_x_idx, e_y_idx, e_theta_idx, u_v_idx, u_w_idx, i] = np.append(neighbors_state, probabilities[i])
-    return P
+    # P = np.zeros((100, 21, 21, 40, 6, 11, 7, 4))
+    P = np.zeros((100, 11, 11, 10, 6, 11, 7, 4))
+    for t in tqdm(range(100)):
+        P[t,:,:,:,:,:,:,:] = error_function(t, state_space[:,:3], control_space, noise=True).reshape((11, 11, 10, 6, 11, 7, 4))
+    # print("Testing prob",P[1,2,3,4,5,6,:,:])
+    # import pdb; pdb.set_trace()
+    np.save("transition_matrix_100iters.npy",P)
+# Transition matrix
+# P_stored = np.load('transition_matrix_10iters.npy')
+def compute_stage_cost(control_space, state_space):
+    """
+    Compute the stage cost L(t, x, y, theta, t, v, w) for all states and controls.
+    """
+    L = np.zeros(100, 11, 11, 10, 6, 11)
 
+# Discount factor
+gamma = 0.95
 
-ray.init()
+# Stage cost
+L = np.zeros((10,11,11,10)) 
 
-@ray.remote
-def worker(t, u, state_space_chunk):
-    results = []
-    for e in state_space_chunk:
-        neighbors, neighbors_index, probabilities = error_function(t, e[:3], u, noise=True)
-        e_x_idx, e_y_idx, e_theta_idx, e_t_idx = state_metric_to_index(e)
-        u_v_idx, u_w_idx = control_metric_to_index(u)
-        for i in range(7):
-            neighbors_state = neighbors[i]
-            results.append((t, e_x_idx, e_y_idx, e_theta_idx, u_v_idx, u_w_idx, i, np.append(neighbors_state, probabilities[i])))
-    return results
+x = np.linspace(-3, 3, 11)
+y = np.linspace(-3, 3, 11)
+theta = np.linspace(-np.pi, np.pi, 10, endpoint=False)
+t = np.linspace(0, 99, 10)
 
-def chunk_state_space(state_space, num_chunks):
-    chunk_size = len(state_space) // num_chunks
-    return [state_space[i * chunk_size:(i + 1) * chunk_size] for i in range(num_chunks)]
+# Create Contol Space
+v = np.linspace(0, 1, 6)
+w = np.linspace(-1, 1, 11)
 
-def compute_transition_probability_parrallel(control_space, state_space, num_workers=4):
-    P = np.zeros((100, 21, 21, 40, 6, 11, 7, 4))
-    jobs = []
+# Create the 3D grid using meshgrid
+# xx, yy, thth, tt = np.meshgrid(x, y, theta, t, indexing='ij')
+xx, yy, thth = np.meshgrid(x, y, theta)
+vv, ww = np.meshgrid(v, w)
 
-    state_space_chunks = chunk_state_space(state_space, num_workers)
-    
-    for t in range(1):
-        for u in tqdm(control_space):
-            for state_space_chunk in state_space_chunks:
-                jobs.append(worker.remote(t, u, state_space_chunk))
-    
-    results = ray.get(jobs)
-    print("Aggregating Results")
-    for result in tqdm(results):
-        for t, e_x_idx, e_y_idx, e_theta_idx, u_v_idx, u_w_idx, i, values in result:
-            P[t, e_x_idx, e_y_idx, e_theta_idx, u_v_idx, u_w_idx, i] = values
-    
-    ray.shutdown()
-    return P
-
-if __name__ == '__main__':
-    
-    print("Test Discretizing states")
-    # Create State Space
-    x = np.linspace(-3, 3, 21)
-    y = np.linspace(-3, 3, 21)
-    theta = np.linspace(-np.pi, np.pi, 40, endpoint=False)
-    t = np.linspace(0, 99, 100)
-    # Create Contol Space
-    v = np.linspace(0, 1, 6)
-    w = np.linspace(-1, 1, 11)
-    
-    # Create the 3D grid using meshgrid
-    xx, yy, thth, tt = np.meshgrid(x, y, theta, t, indexing='ij')
-    vv, ww = np.meshgrid(v, w)
-
-    # Flatten the grid to get a list of 3D points
-    state_space = np.vstack([xx.ravel(), yy.ravel(), thth.ravel(), tt.ravel()]).T
-    control_space = np.vstack([vv.ravel(), ww.ravel()]).T   
-    
-    # print("Test Discretizing state space.........................")
-    # print("There are ", state_space.shape, "states")
-    # random_state = state_space[np.random.choice(1000, 1)].squeeze()
-    # print("Random state in the state_space:", random_state)  
-    # print("Convert State to index", state_metric_to_index(random_state))
-    # print("Convert index back to State", state_index_to_metric(state_metric_to_index(random_state)))
-    # print("\n")
-
-    # print("First state:", state_space[0])
-    # print("Convert First State to index", state_metric_to_index(state_space[0]))
-    # print("Convert index back to State", state_index_to_metric(state_metric_to_index(state_space[0])))
-    # print("\n")
-
-    # print("Last state:", state_space[-1])
-    # print("Convert Last State to index", state_metric_to_index(state_space[-1]))
-    # print("Convert index back to State", state_index_to_metric(state_metric_to_index(state_space[-1])))
-    # print("\n")
-
-    # print("Test Discretizing control space.........................")
-    # print("There are ", control_space.shape, "controls")
-
-    # random_control = control_space[np.random.choice(100, 1)].squeeze()
-    # print("Random control in the control_space:", random_control)
-    # print("Convert Control to index", control_metric_to_index(random_control))
-    # print("Convert index back to Control", control_index_to_metric(control_metric_to_index(random_control)))
-    # print("\n")
-
-    # print("First control:", control_space[0])
-    # print("Convert First Control to index", control_metric_to_index(control_space[0]))
-    # print("Convert index back to Control", control_index_to_metric(control_metric_to_index(control_space[0])))
-    # print("\n")
-
-    # print("Last control:", control_space[-1])
-    # print("Convert Last Control to index", control_metric_to_index(control_space[-1]))
-    # print("Convert index back to Control", control_index_to_metric(control_metric_to_index(control_space[-1])))
-
-    # print("Test get_neighbors")
-    # neighbors_list, neighbors_index = get_neighbors(random_state)
-    # print("Neighbors of random state", random_state)
-    # print(neighbors_list)
-    # print(neighbors_index)
-
-    # print("Test transition probability")
-    # print("Random state", random_state)
-    # print("Random control", random_control)
-
-    # t = random_state[3]
-    # neighbors, neighbors_index, probabilities = error_function(t, random_state[:3], random_control, noise=True)
-    # print("Error with noise at t+1", neighbors)
-    # print("Indices of neighbors", neighbors_index)
-    # print("Probabilities", probabilities)
-    # print("Sum of probabilities", np.sum(probabilities))
-
-
-    #TODO: wrap around the angles and check if it's normal to have 1 prob in the neighbors
-    print("Test transition probability")  
-    e = state_space[0]
-    u = control_space[0]
-    e_x_idx, e_y_idx, e_theta_idx, e_t_idx = state_metric_to_index(e)
-    u_v_idx, u_w_idx = control_metric_to_index(u)
-    print("State id", e_x_idx, e_y_idx, e_theta_idx, e_t_idx)   
-    print("Control id", u_v_idx, u_w_idx)
-    P = compute_transition_probability_parrallel(control_space, state_space, num_workers=8)
-    print(P[0, e_x_idx, e_y_idx, e_theta_idx, u_v_idx, u_w_idx])
-    np.save("transition_matrix.npy", P)
+# Flatten the grid to get a list of 3D points
+state_space = np.vstack([xx.ravel(), yy.ravel(), thth.ravel()]).T
+control_space = np.vstack([vv.ravel(), ww.ravel()]).T  
+# import pdb; pdb.set_trace()
+compute_transition_probability(control_space, state_space)
+# error_function(0, state_space[:,:3], control_space, noise=True)
+# print(state_space[:,:3].shape)
+# all_state_indices = state_metric_to_index(state_space)
+# e_x_idx, e_y_idx, e_theta_idx, e_t_idx = all_state_indices[:,0], all_state_indices[:,1], all_state_indices[:,2], all_state_indices[:,3]
+# all_control_indices = control_metric_to_index(control_space)  
+# print(all_control_indices.shape)
+# u_v_idx, u_w_idx = all_control_indices[:,0], all_control_indices[:,1]

@@ -1,0 +1,14 @@
+print("Test Discretizing states")
+# Create State Space
+x = np.linspace(-3, 3, 11)
+y = np.linspace(-3, 3, 11)
+theta = np.linspace(-np.pi, np.pi, 10, endpoint=False)
+t = np.linspace(0, 99, 10)
+# Create Contol Space
+v = np.linspace(0, 1, 6)
+w = np.linspace(-1, 1, 11)
+
+P = np.zeros((10, 11, 11, 10, 6, 11, 7, 4),dtype=np.float16)
+    for t in range(10):
+        for u in tqdm(control_space):
+            for e in state_space:

@@ -1,7 +1,7 @@
 import numpy as np
 import ray
 from tqdm import tqdm
-from test_gpi import error_function, state_metric_to_index, control_metric_to_index
+from test_compute_p import error_function, state_metric_to_index, control_metric_to_index
 
 ray.init(num_cpus=4)
 
