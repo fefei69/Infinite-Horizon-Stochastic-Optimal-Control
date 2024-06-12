@@ -3,6 +3,10 @@
 ## Overview
 In this assignment, you will implement a controller for a car robot to track a trajectory.
 
+|           CEC without Noise            |
+| :-------------------------------------: |
+| <img src="fig/no_noise_horizon5.gif"> |
+
 ## Dependencies
 This starter code was tested with: python 3.10, matplotlib 3.9.0, and numpy 1.26.4.
 
