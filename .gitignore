@@ -1,1 +1,6 @@
 *.npy
+/P_matrix
+/test
+fig/
+!fig/no_noise_horizon5.gif
+__pycache__/

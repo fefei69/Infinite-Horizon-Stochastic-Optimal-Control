@@ -15,7 +15,7 @@ w_min = -1
 time_step = 0.5  # time between steps in seconds
 T = 100
 sim_time = 120  # simulation time
-sigma = np.square(np.array([0.04, 0.04, 0.004]))
+sigma = np.array([0.04, 0.04, 0.004])
 
 
 # This function returns the reference point at time step k
@@ -125,10 +125,10 @@ def visualize(car_states, ref_traj, obstacles, t, time_step, save=False):
         circles.append(plt.Circle((obs[0], obs[1]), obs[2], color="r", alpha=0.5))
     # create figure and axes
     fig, ax = plt.subplots(figsize=(6, 6))
-    min_scale_x = min(init_state[0], np.min(ref_traj[:, 0])) - 1.5
-    max_scale_x = max(init_state[0], np.max(ref_traj[:, 0])) + 1.5
-    min_scale_y = min(init_state[1], np.min(ref_traj[:, 1])) - 1.5
-    max_scale_y = max(init_state[1], np.max(ref_traj[:, 1])) + 1.5
+    min_scale_x = min(init_state[0], np.min(ref_traj[:, 0])) - 3.5
+    max_scale_x = max(init_state[0], np.max(ref_traj[:, 0])) + 3.5
+    min_scale_y = min(init_state[1], np.min(ref_traj[:, 1])) - 3.5
+    max_scale_y = max(init_state[1], np.max(ref_traj[:, 1])) + 3.5
     ax.set_xlim(left=min_scale_x, right=max_scale_x)
     ax.set_ylim(bottom=min_scale_y, top=max_scale_y)
     for circle in circles:

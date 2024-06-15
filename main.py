@@ -1,9 +1,11 @@
 from time import time
 import numpy as np
 import utils
+import argparse
 
-from test_cec_multi_steps import CEC
-def main():
+from cec import CEC
+from gpi_larger_state_space import extract_policy
+def main(control_method):
     # Obstacles in the environment
     obstacles = np.array([[-2, -2, 0.5], [1, 2, 0.5]])
     # Params
@@ -34,13 +36,23 @@ def main():
         # Generate control input
         # TODO: Replace this simple controller with your own controller
         # control = utils.simple_controller(cur_state, cur_ref)
-        control = CEC(cur_iter, cur_state, cur_ref, time_horizon) 
+        # import pdb; pdb.set_trace()
+        control = CEC(cur_iter, cur_state, cur_ref, time_horizon)
+        # control = extract_policy(cur_iter, cur_state-cur_ref)     
         # control = control[:2]
+        if control_method == 'simple':
+            control = utils.simple_controller(cur_state, cur_ref)
+        elif control_method == 'cec':
+            control = CEC(cur_iter, cur_state, cur_ref, time_horizon)
+        elif control_method == 'gpi':
+            control = extract_policy(cur_iter, cur_state - cur_ref)
+        else:
+            raise ValueError("Unknown control method")
         print("[v,w]", control)
         ################################################################
 
         # Apply control input
-        next_state = utils.car_next_state(utils.time_step, cur_state, control, noise=False)
+        next_state = utils.car_next_state(utils.time_step, cur_state, control, noise=True)
         # Update current state
         cur_state = next_state
         # Loop time
@@ -71,5 +83,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description='Control method selection')
+    parser.add_argument('--control_method', type=str, choices=['simple', 'cec', 'gpi'], required=True, help='Control method to use')
+    args = parser.parse_args()
+    main(args.control_method)
 

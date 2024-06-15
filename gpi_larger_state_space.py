@@ -44,7 +44,7 @@ def wrap_around_angle_grids(lst):
     """
     # test case
     # lst = np.array([10,11,12,13,14,15,16,17,18,19,20,0,1,2,3,4,5,6,7,8,9])
-    rule = np.array([i for i in range(10)])
+    rule = np.array([i for i in range(40)])
     invalid_indices = np.where(~np.isin(lst, rule))[0].tolist()
     # If all indices are valid, return the list as it is
     if len(invalid_indices) == 0:
@@ -59,7 +59,7 @@ def map_back_nearest_grid(lst):
     Map the real number back to the nearest grid point.
     a_min and a_max are the lower and upper bound of the grid.
     """ 
-    cast_back = np.clip(lst, a_min=0, a_max=10)
+    cast_back = np.clip(lst, a_min=0, a_max=20)
     return cast_back
 
 def get_resolution():
@@ -163,7 +163,7 @@ def normalize_prob(probabilities: np.ndarray) -> np.ndarray:
     # Set probabilities smaller than the threshold to zero
     probabilities[probabilities < threshold] = 0
     # Sum of remaining probabilities
-    total_prob = np.sum(probabilities)
+    total_prob = np.sum(probabilities,axis=1, keepdims=True)
     return probabilities/total_prob
 
 def add_noise(mean, samples):
@@ -174,24 +174,41 @@ def add_noise(mean, samples):
     res = get_resolution()
     r = np.square(res[:3])
     # rescaled sigma to grids unit
-    sigma = np.array([[0.04/r[0], 0, 0],
-                      [0, 0.04/r[1], 0],
-                      [0, 0, 0.004/r[2]]])
+    sigma = np.array([[0.04, 0, 0],
+                      [0, 0.04, 0],
+                      [0, 0, 0.004]])
     res = get_resolution()
     r = res[:3]
     # import pdb; pdb.set_trace()
     mean, t = mean[:,:3,:], mean[:,3,:]
     samples = np.array(samples)
-    probabilities = np.zeros((dim_states, 7, 1, dim_controls), dtype=np.float16)
+    # Reshape mean and samples for vectorized operations
+    mean_pos_reshaped = mean.transpose(0, 2, 1).reshape(-1, 3)  # Shape: (|x|*|u|, 3)
+    samples_reshaped = samples.transpose(0, 3, 1, 2).reshape(-1, 7, 3)  # Shape: (|x|*|u|, 7, 3)
 
-    for i in range(dim_states):
-        for j in range(dim_controls):
-            rv = multivariate_normal(mean[i,:,j], sigma)
-            probabilities[i,:,:,j] = normalize_prob(rv.pdf(samples[i, :, :, j])).reshape(-1,1)
-    full_samples = np.concatenate((samples, probabilities), axis=2)
+    # Compute the differences between samples and means
+    diffs = samples_reshaped - mean_pos_reshaped[:, np.newaxis, :]  # Shape: (|x|*|u|, 7, 3)
+
+    # Compute the exponents in a vectorized manner
+    inv_sigma = np.linalg.inv(sigma)  # Shape: (3, 3)
+    exponents = -0.5 * np.sum(np.matmul(diffs, inv_sigma) * diffs, axis=-1)  # Shape: (|x|*|u|, 7)
+
+    # Compute the normalization factor
+    normalization_factor = np.sqrt((2 * np.pi) ** 3 * np.linalg.det(sigma))
+
+    # Compute probabilities
+    probabilities = np.exp(exponents) / normalization_factor  # Shape: (|x|*|u|, 7)
     # import pdb; pdb.set_trace()
-    # current shape: |x| x 7 x 4 x |u|
-    return full_samples.transpose(0, 3, 1, 2) #desired output: |x| x |u| x 7 x 4
+    # Normalize probabilities
+    probabilities = normalize_prob(probabilities).reshape(dim_states, dim_controls, 7, 1)  # Shape: (|x|, |u|, 7, 1)
+    # import pdb; pdb.set_trace()
+    # Concatenate probabilities to samples
+    samples_reshaped = samples.transpose(0, 3, 1, 2).reshape(dim_states, dim_controls, 7, 3)  # Shape: (|x|, |u|, 7, 3)
+    full_samples = np.concatenate((samples_reshaped, probabilities), axis=3)  # Shape: (|x|, |u|, 7, 4)
+
+    # Transpose to desired output shape
+    return full_samples.transpose(0, 1, 2, 3)  # Shape: (|x|, |u|, 7, 4)
+    
 
 def error_function(t, curr_error, u_t, noise = True):
     '''
@@ -231,14 +248,13 @@ def error_function(t, curr_error, u_t, noise = True):
     
 def compute_transition_probability(control_space, state_space):
     # Initialize the transition probability matrix P (t, x, y, theta, v, w, 7, 4)
-    # P = np.zeros((100, 21, 21, 40, 6, 11, 7, 4))
-    P = np.zeros((100, 11, 11, 10, 6, 11, 7, 4))
+    P = np.zeros((100, 21, 21, 40, 6, 11, 7, 4))
     for t in tqdm(range(100)):
-        # import pdb; pdb.set_trace()
-        P[t,:,:,:,:,:,:,:] = error_function(t, state_space[:,:3], control_space, noise=True).reshape((11, 11, 10, 6, 11, 7, 4))
+        P[t,:,:,:,:,:,:,:] = error_function(t, state_space[:,:3], control_space, noise=True).reshape((21, 21, 40, 6, 11, 7, 4))
     # print("Testing prob",P[1,2,3,4,5,6,:,:])
     # import pdb; pdb.set_trace()
-    # np.save("transition_matrix_100iters.npy",P)
+    return P
+    # np.save("transition_matrix_100iters_larger_space.npy",P)
 # Transition matrix
 # P_stored = np.load('transition_matrix_10iters.npy')
 def compute_stage_cost(control_space, state_space):
@@ -250,7 +266,7 @@ def compute_stage_cost(control_space, state_space):
     Q = np.eye(2)
     R = np.eye(2)
     # w_t = np.zeros((3, 1))
-    L = np.zeros((100, 11, 11, 10, 6, 11))
+    L = np.zeros((100, 21, 21, 40, 6, 11))
     pos_err = state_space[:,:2] # (1210,2)
     theta_err = state_space[:,2] # (1210,)
     u_t = control_space # (66,2)
@@ -274,7 +290,7 @@ def compute_stage_cost(control_space, state_space):
         u_t_cost = np.einsum('nij,jk,nkj->ni', u_t_expanded, R, u_t_expanded).reshape(1,-1)  # Shape (1, 66)
         # Combine all costs
         total_cost = pos_err_cost + theta_err_cost + u_t_cost  # Shape (1210, 66)
-        L[t,:,:,:,:,:] = total_cost.reshape((11, 11, 10, 6, 11))
+        L[t,:,:,:,:,:] = total_cost.reshape((21, 21, 40, 6, 11))
         # import pdb; pdb.set_trace()
         # Penalize collision
         # cost_t += check_collision(curr_p)*1000
@@ -284,23 +300,23 @@ def compute_stage_cost(control_space, state_space):
 
 def policy_iteration(control_space, state_space, num_iter=50):
     # t Value functions V(x)
-    V = np.zeros((100, 11, 11, 10)) 
-    P = np.load('transition_matrix_100iters.npy') # (100, 11, 11, 10, 6, 11, 7, 4)
+    V = np.zeros((100, 21, 21, 40)) 
+    P = np.load('transition_matrix_100iters_larger_space_larger_prob.npy') # (100, 11, 11, 10, 6, 11, 7, 4)
     L = compute_stage_cost(control_space, state_space) # (100, 11, 11, 10, 6, 11)
-    pi = np.zeros((100, 11, 11, 10, 2),dtype='int')
+    pi = np.zeros((100, 21, 21, 40, 2),dtype='int')
     # Discount factor
     gamma = 0.95
     # t = 0
     # GPI
     for t in tqdm(range(30)):
-        for itr in range(50):
+        for itr in range(50): #TODO: change this to while True, since sometimes V does not converge
             print("PI Iteration: ", itr)
             # Policy Evaluation
-            while True:  #for _ in range(num_iter):
+            for _ in range(num_iter):
                 OLD_V = V.copy()
-                for ex in range(11):
-                    for ey in range(11):
-                        for theta in range(10):
+                for ex in range(21):
+                    for ey in range(21):
+                        for theta in range(40):
                             v_control = pi[t,ex,ey,theta,0]
                             w_control = pi[t,ex,ey,theta,1]
                             # print("[V,w]",v_control, w_control)
@@ -309,6 +325,7 @@ def policy_iteration(control_space, state_space, num_iter=50):
                             theta_indices = wrap_around_angle_grids(P[t,ex,ey,theta,v_control,w_control,:,2].astype('int'))
                             try:
                                 V[t,ex,ey,theta] = L[t,ex,ey,theta,v_control,w_control] + gamma * np.sum(P[t,ex,ey,theta,v_control,w_control,:,3] * V[t, x_indices, y_indices, theta_indices])
+                                # import pdb; pdb.set_trace()
                             except IndexError:
                                 print("Some Indices are out of bounds")
                                 import pdb; pdb.set_trace()
@@ -318,14 +335,14 @@ def policy_iteration(control_space, state_space, num_iter=50):
                     break
             # import pdb; pdb.set_trace()
             # Policy Improvement
-            for ex in range(11):
-                for ey in range(11):
-                    for theta in range(10):
+            for ex in range(21):
+                for ey in range(21):
+                    for theta in range(40):
                         x_indices = map_back_nearest_grid(P[t,ex,ey,theta,:,:,:,0].astype('int'))
                         y_indices = map_back_nearest_grid(P[t,ex,ey,theta,:,:,:,1].astype('int'))
                         theta_indices = wrap_around_angle_grids(P[t,ex,ey,theta,:,:,:,2].astype('int'))
                         Q = L[t,ex,ey,theta,:,:] + gamma * np.sum(P[t,ex,ey,theta,:,:,:,3] * V[t, x_indices, y_indices, theta_indices],axis=2)
-                        # import pdb; pdb.set_trace() 
+                        # import pdb; pdb.set_trace()
                         pi[t, ex, ey, theta, :] = np.unravel_index(np.argmin(Q), Q.shape) 
                         # print("Q",Q)
                         # import pdb; pdb.set_trace()
@@ -336,10 +353,10 @@ gamma = 0.95
 # Stage cost
 # L = np.zeros((10,11,11,10)) 
 
-x = np.linspace(-3, 3, 11)
-y = np.linspace(-3, 3, 11)
-theta = np.linspace(-np.pi, np.pi, 10, endpoint=False)  #[-pi, pi]
-t = np.linspace(0, 99, 10)
+x = np.linspace(-3, 3, 21)
+y = np.linspace(-3, 3, 21)
+theta = np.linspace(-np.pi, np.pi, 40, endpoint=False)  #[-pi, pi]
+t = np.linspace(0, 99, 100)
 
 # Create Contol Space
 v = np.linspace(0, 1, 6)
@@ -353,25 +370,27 @@ vv, ww = np.meshgrid(v, w)
 # Flatten the grid to get a list of 3D points
 state_space = np.vstack([xx.ravel(), yy.ravel(), thth.ravel()]).T
 control_space = np.vstack([vv.ravel(), ww.ravel()]).T  
-# compute_transition_probability(control_space, state_space)
+# P = compute_transition_probability(control_space, state_space)
+# np.save("transition_matrix_100iters_larger_space_larger_prob.npy",P)
 # import pdb; pdb.set_trace()
-PI = policy_iteration(control_space, state_space)
-# np.save("policy_30iter_PI_iter_til_converge.npy", PI)
+# PI = policy_iteration(control_space, state_space)
+# np.save("policy_30iter_PI_50iter_larger_space_larger_prob.npy", PI)
 
 # P = np.load("transition_matrix_100iters.npy")
 # print("Testing prob",P[1,2,3,4,5,6,:,:])
 # import pdb; pdb.set_trace()
-def extract_policy(t, current_state):
-    path = 'policy_100iter.npy'
+def extract_policy(t, current_error):
+    path = 'policy_30iter_PI_50iter_larger_space_larger_prob.npy'
     POLICY = np.load(path)
     # current_state = np.array([1.5       , 0.        , 1.57079633])
-    x,y,th = state_metric_to_index(current_state)
-    x = np.clip(x, 0, 10)
-    y = np.clip(y, 0, 10)
-    rule = np.array([i for i in range(10)])
+    x,y,th = state_metric_to_index(current_error)
+    x = np.clip(x, 0, 20)
+    y = np.clip(y, 0, 20)
+    rule = np.array([i for i in range(40)])
     if np.isin(th, rule) == False:
         length = len(rule)
         th = rule[(th % length)]
+    t = (t + 1) % 100
     control = POLICY[t, x, y, th, :]
     return control_index_to_metric(control)
 
