@@ -5,6 +5,7 @@ import argparse
 
 from cec import CEC
 from gpi_larger_state_space import extract_policy
+
 def main(control_method):
     # Obstacles in the environment
     obstacles = np.array([[-2, -2, 0.5], [1, 2, 0.5]])

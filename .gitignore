@@ -4,3 +4,5 @@
 fig/
 !fig/no_noise_horizon5.gif
 __pycache__/
+gpi.py
+gpi_larger_state_space.py
